@@ -1,6 +1,10 @@
 FROM python:3.12-alpine
 
-RUN apk update && apk add --no-cache gcc musl-dev postgresql-dev
+RUN apk update && apk add --no-cache \
+    gcc \
+    musl-dev \
+    postgresql-dev \
+    linux-headers 
 
 WORKDIR /app
 
