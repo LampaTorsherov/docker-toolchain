@@ -6,7 +6,7 @@ on:
       image_name:
         description: "Docker Image Name (e.g., library/ubuntu or ghcr.io/user/repo/image)"
         required: true
-        default: "ubuntu:latest"
+        default: "ubuntu"
         type: string
       tag:
         description: "Image tag"
@@ -23,10 +23,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo (optional, only if you need context)
-        uses: actions/checkout@v4
-
-      - name: Log in to Docker Registry (if username provided)
+      - name: Log in to Docker Registry
         if: github.event.inputs.docker_username != ''
         uses: docker/login-action@v3
         with:
@@ -37,7 +34,9 @@ jobs:
         id: save_image
         run: |
           IMAGE_REF="${{ github.event.inputs.image_name }}:${{ github.event.inputs.tag }}"
-          FILE_NAME=$(echo "$IMAGE_REF" | sed 's/[^a-zA-Z0-9_.-]/_/g').tar
+          
+          SAFE_NAME=$(echo "$IMAGE_REF" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+          FILE_NAME="$SAFE_NAME.tar"
           
           echo "Pulling $IMAGE_REF..."
           docker pull $IMAGE_REF
@@ -46,11 +45,11 @@ jobs:
           docker save -o $FILE_NAME $IMAGE_REF
           
           echo "DOCKER_TAR_FILE=$FILE_NAME" >> "$GITHUB_OUTPUT"
-          echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_OUTPUT"
+          echo "SAFE_ARTIFACT_NAME=$SAFE_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Upload Docker Image Tarball
         uses: actions/upload-artifact@v4
         with:
-          name: docker-image-${{ steps.save_image.outputs.IMAGE_REF }}
+          name: docker-image-${{ steps.save_image.outputs.SAFE_ARTIFACT_NAME }} 
           path: ${{ steps.save_image.outputs.DOCKER_TAR_FILE }}
           retention-days: 1
