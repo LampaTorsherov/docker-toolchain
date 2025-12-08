@@ -3,6 +3,11 @@ name: Universal Docker Image Builder and Exporter
 on:
   workflow_dispatch:
     inputs:
+      branch: 
+        description: "Branch to checkout"
+        required: true
+        default: "main"
+        type: string
       context_path:
         description: "Path to the build context (directory containing Dockerfile and app code)"
         required: true
@@ -28,8 +33,10 @@ jobs:
   build_and_export:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
