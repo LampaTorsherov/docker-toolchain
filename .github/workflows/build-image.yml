@@ -1,0 +1,59 @@
+name: Universal Docker Image Builder and Exporter
+
+on:
+  workflow_dispatch:
+    inputs:
+      context_path:
+        description: "Path to the build context (directory containing Dockerfile and app code)"
+        required: true
+        default: "."
+        type: string
+      dockerfile_path:
+        description: "Path to the Dockerfile relative to context_path"
+        required: true
+        default: "Dockerfile"
+        type: string
+      image_name:
+        description: "Desired name for the resulting Docker image (e.g., my-app)"
+        required: true
+        default: "my-custom-app"
+        type: string
+      image_tag:
+        description: "Desired tag for the resulting Docker image (e.g., latest or v1.0.0)"
+        required: true
+        default: "latest"
+        type: string
+
+jobs:
+  build_and_export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Generate safe artifact name (replace non-alphanumeric chars)
+        id: safe_name
+        run: |
+          SAFE_NAME=$(echo "${{ github.event.inputs.image_name }}-${{ github.event.inputs.image_tag }}" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+          echo "ARTIFACT_NAME=$SAFE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Build the image and export to a tar file
+        id: build_image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ github.event.inputs.context_path }}
+          file: ${{ github.event.inputs.dockerfile_path }}
+          push: false
+          tags: ${{ github.event.inputs.image_name }}:${{ github.event.inputs.image_tag }}
+          outputs: type=tar,dest=/tmp/image.tar
+
+      - name: Upload Docker Image Tarball Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-tarball-${{ steps.safe_name.outputs.ARTIFACT_NAME }}
+          path: /tmp/image.tar
+          retention-days: 1
+
