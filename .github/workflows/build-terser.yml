@@ -1,0 +1,89 @@
+name: Build Terser Standalone Binaries
+
+on:
+  workflow_dispatch:  # Ручной запуск
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - os: windows
+            arch: x64
+            pkg_target: node18-win-x64
+            output_name: terser.exe
+          - os: linux
+            arch: x64
+            pkg_target: node18-linux-x64
+            output_name: terser
+          - os: macos
+            arch: x64
+            pkg_target: node18-macos-x64
+            output_name: terser-macos-x64
+          - os: macos
+            arch: arm64
+            pkg_target: node18-macos-arm64
+            output_name: terser-macos-arm64
+          - os: linux
+            arch: arm64
+            pkg_target: node18-linux-arm64
+            output_name: terser-linux-arm64
+          - os: windows
+            arch: arm64
+            pkg_target: node18-win-arm64
+            output_name: terser-arm64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          npm install -g pkg
+          npm install terser
+
+      - name: Find terser binary path
+        id: terser_path
+        run: |
+          TER_PATH=$(npm list -g terser --depth=0 --parseable | head -1)/bin/terser
+          echo "path=$TER_PATH" >> $GITHUB_OUTPUT
+
+      - name: Package with pkg
+        run: |
+          pkg ${{ steps.terser_path.outputs.path }} \
+            --targets ${{ matrix.target.pkg_target }} \
+            --output ${{ matrix.target.output_name }} \
+            --compress GZip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terser-${{ matrix.target.os }}-${{ matrix.target.arch }}
+          path: ${{ matrix.target.output_name }}
+          if-no-files-found: error
+
+  create-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./artifacts/**/*
+          draft: false
+          prerelease: false
