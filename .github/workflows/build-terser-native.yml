@@ -1,0 +1,65 @@
+name: Build Terser Native Binary with Bun
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            target: windows-x64
+            output: terser.exe
+          - os: ubuntu-latest
+            target: linux-x64
+            output: terser
+          - os: macos-latest
+            target: macos-x64
+            output: terser-macos-x64
+          - os: macos-14
+            target: macos-arm64
+            output: terser-macos-arm64
+
+    steps:
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Create terser bundle script
+        run: |
+          cat > bundle-terser.js << 'EOF'
+          const { minify } = require('terser');
+          const fs = require('fs');
+          
+          const input = fs.readFileSync(0, 'utf-8');
+          
+          minify(input, {
+            compress: {
+              unused: true,
+              dead_code: true,
+              drop_unused: true
+            },
+            mangle: false
+          }).then(result => {
+            process.stdout.write(result.code);
+          }).catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          EOF
+
+      - name: Install terser
+        run: npm install terser
+
+      - name: Compile to native binary with Bun
+        run: |
+          bun build bundle-terser.js --compile --outfile ${{ matrix.output }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: terser-native-${{ matrix.target }}
+          path: ${{ matrix.output }}
