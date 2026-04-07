@@ -28,7 +28,8 @@ jobs:
         with:
           bun-version: latest
 
-      - name: Create terser bundle script
+      - name: Create terser bundle script (Unix)
+        if: runner.os != 'Windows'
         run: |
           cat > bundle-terser.js << 'EOF'
           const { minify } = require('terser');
@@ -51,10 +52,34 @@ jobs:
           });
           EOF
 
+      - name: Create terser bundle script (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          @"
+          const { minify } = require('terser');
+          const fs = require('fs');
+          
+          const input = fs.readFileSync(0, 'utf-8');
+          
+          minify(input, {
+            compress: {
+              unused: true,
+              dead_code: true,
+              drop_unused: true
+            },
+            mangle: false
+          }).then(result => {
+            process.stdout.write(result.code);
+          }).catch(err => {
+            console.error(err);
+            process.exit(1);
+          });
+          "@ | Out-File -Encoding utf8 bundle-terser.js
+
       - name: Install terser
         run: npm install terser
 
-      - name: Compile to native binary with Bun
+      - name: Compile to native binary
         run: |
           bun build bundle-terser.js --compile --outfile ${{ matrix.output }}
 
