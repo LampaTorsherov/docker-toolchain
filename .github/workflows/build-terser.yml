@@ -1,89 +1,46 @@
 name: Build Terser Standalone Binaries
 
 on:
-  workflow_dispatch:  # Ручной запуск
-  
+  workflow_dispatch:
+
 jobs:
   build:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        target:
-          - os: windows
-            arch: x64
+        include:
+          - target: win-x64
             pkg_target: node18-win-x64
-            output_name: terser.exe
-          - os: linux
-            arch: x64
+            output: terser.exe
+          - target: linux-x64
             pkg_target: node18-linux-x64
-            output_name: terser
-          - os: macos
-            arch: x64
+            output: terser
+          - target: macos-x64
             pkg_target: node18-macos-x64
-            output_name: terser-macos-x64
-          - os: macos
-            arch: arm64
+            output: terser-macos
+          - target: macos-arm64
             pkg_target: node18-macos-arm64
-            output_name: terser-macos-arm64
-          - os: linux
-            arch: arm64
-            pkg_target: node18-linux-arm64
-            output_name: terser-linux-arm64
-          - os: windows
-            arch: arm64
-            pkg_target: node18-win-arm64
-            output_name: terser-arm64.exe
+            output: terser-macos-arm64
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
-      - name: Install dependencies
+      - name: Install pkg and terser locally
         run: |
-          npm install -g pkg
-          npm install terser
-
-      - name: Find terser binary path
-        id: terser_path
-        run: |
-          TER_PATH=$(npm list -g terser --depth=0 --parseable | head -1)/bin/terser
-          echo "path=$TER_PATH" >> $GITHUB_OUTPUT
+          npm init -y
+          npm install pkg terser
 
       - name: Package with pkg
         run: |
-          pkg ${{ steps.terser_path.outputs.path }} \
-            --targets ${{ matrix.target.pkg_target }} \
-            --output ${{ matrix.target.output_name }} \
-            --compress GZip
+          npx pkg node_modules/terser/bin/terser \
+            --targets ${{ matrix.pkg_target }} \
+            --output ${{ matrix.output }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: terser-${{ matrix.target.os }}-${{ matrix.target.arch }}
-          path: ${{ matrix.target.output_name }}
-          if-no-files-found: error
-
-  create-release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: ./artifacts/**/*
-          draft: false
-          prerelease: false
+          name: terser-${{ matrix.target }}
+          path: ${{ matrix.output }}
