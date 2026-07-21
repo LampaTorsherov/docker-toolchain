@@ -84,6 +84,7 @@ RUN set -eux; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         gosu \
+        less \
         ca-certificates \
         coreutils \
         grep \
