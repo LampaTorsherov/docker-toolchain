@@ -67,6 +67,7 @@ RUN set -eux; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y \
         --no-install-recommends \
         gosu \
+        less \
         ca-certificates \
         coreutils \
         debconf \
