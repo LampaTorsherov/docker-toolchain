@@ -102,6 +102,9 @@ RUN set -eux; \
         ssl-cert \
         tzdata \
         zlib1g; \
+        libxml2 \
+        libxslt1.1 \
+        locales \
     dpkg -i /tmp/libzstd1_*.deb; \
     apt-get check; \
     dpkg --audit; \
