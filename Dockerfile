@@ -83,6 +83,7 @@ RUN set -eux; \
         > /etc/apt/apt.conf.d/99archive-no-valid-until; \
     apt-get update; \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gosu \
         ca-certificates \
         coreutils \
         grep \
