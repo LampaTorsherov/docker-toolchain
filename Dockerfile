@@ -101,10 +101,10 @@ RUN set -eux; \
         sed \
         ssl-cert \
         tzdata \
-        zlib1g; \
+        zlib1g \
         libxml2 \
         libxslt1.1 \
-        locales \
+        locales; \
     dpkg -i /tmp/libzstd1_*.deb; \
     apt-get check; \
     dpkg --audit; \
