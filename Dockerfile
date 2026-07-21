@@ -88,6 +88,9 @@ RUN set -eux; \
         ssl-cert \
         tzdata \
         zlib1g \
+        libxml2 \
+        libxslt1.1 \
+        libsasl2-2 \
         /tmp/legacy-debs/*.deb; \
     \
     apt-get check; \
