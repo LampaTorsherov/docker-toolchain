@@ -1,4 +1,4 @@
-FROM golang:1.26-bookworm
+FROM golang:1.27-bookworm
 
 # Устанавливаем зависимости для сборки с Kerberos
 RUN apt update && apt upgrade -y && \
