@@ -1,0 +1,265 @@
+name: Docker Cache Export
+on:
+  workflow_dispatch:
+    inputs:
+      include_go:
+        description: 'Go toolchain'
+        required: true
+        type: boolean
+        default: true
+      include_java:
+        description: 'Java (Amazon Corretto)'
+        required: true
+        type: boolean
+        default: true
+      include_dotnet:
+        description: '.NET / ASP.NET Core (без 9.0)'
+        required: true
+        type: boolean
+        default: true
+      include_base:
+        description: 'Базовые образы (alpine, debian, distroless)'
+        required: true
+        type: boolean
+        default: true
+      include_databases:
+        description: 'Базы данных (Postgres, Redis, MySQL, MongoDB)'
+        required: true
+        type: boolean
+        default: true
+      include_infra:
+        description: 'Инфраструктура (MinIO, NATS, Redpanda)'
+        required: true
+        type: boolean
+        default: true
+      include_web:
+        description: 'Веб-серверы (nginx)'
+        required: true
+        type: boolean
+        default: true
+      include_registry:
+        description: 'Docker Registry и UI'
+        required: true
+        type: boolean
+        default: true
+      include_go_proxy:
+        description: 'Go Proxy (Athens, goproxy)'
+        required: true
+        type: boolean
+        default: true
+      include_management:
+        description: 'Управление (Portainer, nginx-proxy)'
+        required: true
+        type: boolean
+        default: true
+      include_tools:
+        description: 'Утилиты (golangci-lint, trivy, yq, jq)'
+        required: true
+        type: boolean
+        default: true
+      include_gitlab:
+        description: 'GitLab CE и GitLab Runner'
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  export-docker-cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Define image lists
+        id: images
+        run: |
+          IMAGES=()
+          
+          # Go toolchain
+          if [[ "${{ inputs.include_go }}" == "true" ]]; then
+            IMAGES+=(
+              "golang:1.27-bookworm"
+              "golang:1.27-alpine"
+              "golang:1.26-bookworm"
+              "golang:1.26-alpine"
+            )
+          fi
+          
+          # Java (Amazon Corretto)
+          if [[ "${{ inputs.include_java }}" == "true" ]]; then
+            IMAGES+=(
+              "amazoncorretto:25"
+              "amazoncorretto:25-al2023"
+              "amazoncorretto:21"
+              "amazoncorretto:21-al2023"
+              "amazoncorretto:17"
+              "amazoncorretto:17-al2023"
+              "amazoncorretto:11"
+              "amazoncorretto:11-al2023"
+              "amazoncorretto:8"
+              "amazoncorretto:8-al2023"
+            )
+          fi
+          
+          # .NET / ASP.NET Core (без 9.0)
+          if [[ "${{ inputs.include_dotnet }}" == "true" ]]; then
+            IMAGES+=(
+              "mcr.microsoft.com/dotnet/sdk:10.0"
+              "mcr.microsoft.com/dotnet/aspnet:10.0"
+              "mcr.microsoft.com/dotnet/sdk:8.0"
+              "mcr.microsoft.com/dotnet/aspnet:8.0"
+              "mcr.microsoft.com/dotnet/sdk:7.0"
+              "mcr.microsoft.com/dotnet/aspnet:7.0"
+              "mcr.microsoft.com/dotnet/sdk:6.0"
+              "mcr.microsoft.com/dotnet/aspnet:6.0"
+            )
+          fi
+          
+          # Base images
+          if [[ "${{ inputs.include_base }}" == "true" ]]; then
+            IMAGES+=(
+              "alpine:3.22"
+              "alpine:3.21"
+              "debian:trixie-slim"
+              "debian:bookworm-slim"
+              "gcr.io/distroless/static-debian12:nonroot"
+              "gcr.io/distroless/base-debian12:nonroot"
+              "gcr.io/distroless/cc-debian12:nonroot"
+            )
+          fi
+          
+          # Databases
+          if [[ "${{ inputs.include_databases }}" == "true" ]]; then
+            IMAGES+=(
+              "postgres:17-alpine"
+              "postgres:16-alpine"
+              "redis:8.0-alpine"
+              "redis:7.4-alpine"
+              "mysql:9.0"
+              "mysql:8.4"
+              "mongo:8.0"
+              "mongo:7.0"
+              "mongo:6.0"
+            )
+          fi
+          
+          # Infrastructure
+          if [[ "${{ inputs.include_infra }}" == "true" ]]; then
+            IMAGES+=(
+              "minio/minio:RELEASE.2026-10-10T00-00-00Z"
+              "nats:2.11-alpine"
+              "docker.redpanda.com/redpandadata/redpanda:v24.3.5"
+            )
+          fi
+          
+          # Web servers
+          if [[ "${{ inputs.include_web }}" == "true" ]]; then
+            IMAGES+=(
+              "nginx:1.27"
+              "nginx:1.27-alpine"
+              "nginx:1.26"
+              "nginx:1.26-alpine"
+            )
+          fi
+          
+          # Docker Registry и UI
+          if [[ "${{ inputs.include_registry }}" == "true" ]]; then
+            IMAGES+=(
+              "registry:2.8.3"
+              "joxit/docker-registry-ui:latest"
+            )
+          fi
+          
+          # Go Proxy
+          if [[ "${{ inputs.include_go_proxy }}" == "true" ]]; then
+            IMAGES+=(
+              "gomods/athens:v0.15.0"
+              "goproxy/goproxy:latest"
+            )
+          fi
+          
+          # Management tools
+          if [[ "${{ inputs.include_management }}" == "true" ]]; then
+            IMAGES+=(
+              "portainer/portainer-ce:2.21.4"
+              "nginxproxy/nginx-proxy:1.6"
+              "nginxproxy/acme-companion:2.4"
+            )
+          fi
+          
+          # Tools
+          if [[ "${{ inputs.include_tools }}" == "true" ]]; then
+            IMAGES+=(
+              "golangci/golangci-lint:v1.70.0"
+              "golangci/golangci-lint:v1.68.0"
+              "aquasec/trivy:0.62.0"
+              "hadolint/hadolint:v2.12.0-alpine"
+              "mikefarah/yq:v4.45.1"
+              "stedolan/jq:1.7.1"
+              "curlimages/curl:8.11.1"
+            )
+          fi
+
+          # GitLab CE и GitLab Runner
+          if [[ "${{ inputs.include_gitlab }}" == "true" ]]; then
+            IMAGES+=(
+              "gitlab/gitlab-ce:latest"
+              "gitlab/gitlab-runner:latest"
+              "gitlab/gitlab-runner:alpine"
+            )
+          fi
+          
+          # Сохраняем список в файл
+          printf '%s\n' "${IMAGES[@]}" > images.txt
+          echo "=== Images to pull ==="
+          cat images.txt
+          echo "Total: ${#IMAGES[@]} images"
+          echo "count=${#IMAGES[@]}" >> $GITHUB_OUTPUT
+
+      - name: Pull Docker images
+        run: |
+          echo "=== Pulling images ==="
+          while IFS= read -r image; do
+            echo "Pulling: $image"
+            docker pull "$image" || echo "WARNING: Failed to pull $image"
+          done < images.txt
+
+      - name: Save Docker images to tar archive
+        run: |
+          echo "=== Saving images to tar archive ==="
+          mapfile -t IMAGES < images.txt
+          TIMESTAMP=$(date +%Y-%m-%d)
+          TAR_FILE="docker-cache-${TIMESTAMP}.tar"
+          echo "Creating: $TAR_FILE"
+          docker save -o "$TAR_FILE" "${IMAGES[@]}"
+          SIZE=$(du -h "$TAR_FILE" | cut -f1)
+          echo "Archive size: $SIZE"
+          echo "$TAR_FILE" > tar_filename.txt
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-cache-${{ github.run_id }}
+          path: |
+            *.tar
+            tar_filename.txt
+            images.txt
+          retention-days: 30
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Summary
+        run: |
+          echo "## Docker Cache Export Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Successfully exported Docker images" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Archive:** $(cat tar_filename.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $(du -h $(cat tar_filename.txt) | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "**Images:** $(wc -l < images.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to load in isolated environment:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "docker load -i $(cat tar_filename.txt)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
