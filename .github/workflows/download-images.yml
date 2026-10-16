@@ -102,7 +102,7 @@ jobs:
             )
           fi
           
-          # .NET / ASP.NET Core (без 9.0)
+          # .NET / ASP.NET Core
           if [[ "${{ inputs.include_dotnet }}" == "true" ]]; then
             IMAGES+=(
               "mcr.microsoft.com/dotnet/sdk:10.0"
@@ -147,7 +147,9 @@ jobs:
           # Infrastructure
           if [[ "${{ inputs.include_infra }}" == "true" ]]; then
             IMAGES+=(
-              "minio/minio:RELEASE.2026-10-10T00-00-00Z"
+              # ИСПРАВЛЕНО: заменен несуществующий тег-заглушка 00-00-00Z на latest. 
+              # Для продакшена рекомендуется использовать конкретный тег, например: RELEASE.2024-10-13T13-34-11Z
+              "minio/minio:latest"
               "nats:2.11-alpine"
               "docker.redpanda.com/redpandadata/redpanda:v24.3.5"
             )
@@ -210,29 +212,63 @@ jobs:
             )
           fi
           
-          # Сохраняем список в файл
+          # Сохраняем список в файл (каждый образ с новой строки)
           printf '%s\n' "${IMAGES[@]}" > images.txt
           echo "=== Images to pull ==="
           cat images.txt
           echo "Total: ${#IMAGES[@]} images"
           echo "count=${#IMAGES[@]}" >> $GITHUB_OUTPUT
 
+      # ИСПРАВЛЕНО: Строгая обработка ошибок при скачивании
       - name: Pull Docker images
         run: |
           echo "=== Pulling images ==="
+          FAILED=0
           while IFS= read -r image; do
+            # Пропускаем пустые строки
+            [[ -z "$image" ]] && continue
+            
             echo "Pulling: $image"
-            docker pull "$image" || echo "WARNING: Failed to pull $image"
+            if ! docker pull "$image"; then
+              echo "::error::Failed to pull $image"
+              FAILED=1
+            fi
           done < images.txt
+          
+          if [ $FAILED -eq 1 ]; then
+            echo "::error::One or more images failed to pull. Check the logs above."
+            exit 1
+          fi
 
+      # ИСПРАВЛЕНО: Проверка наличия образа в локальном кэше перед сохранением
       - name: Save Docker images to tar archive
         run: |
           echo "=== Saving images to tar archive ==="
           mapfile -t IMAGES < images.txt
+          VALID_IMAGES=()
+          
+          for image in "${IMAGES[@]}"; do
+            [[ -z "$image" ]] && continue
+            
+            # Проверяем, действительно ли образ был скачан и существует локально
+            if docker image inspect "$image" > /dev/null 2>&1; then
+              VALID_IMAGES+=("$image")
+            else
+              echo "::warning::Skipping $image (not found locally after pull attempt)"
+            fi
+          done
+
+          if [ ${#VALID_IMAGES[@]} -eq 0 ]; then
+            echo "::error::No valid images to save!"
+            exit 1
+          fi
+
           TIMESTAMP=$(date +%Y-%m-%d)
           TAR_FILE="docker-cache-${TIMESTAMP}.tar"
-          echo "Creating: $TAR_FILE"
-          docker save -o "$TAR_FILE" "${IMAGES[@]}"
+          echo "Creating: $TAR_FILE with ${#VALID_IMAGES[@]} images"
+          
+          docker save -o "$TAR_FILE" "${VALID_IMAGES[@]}"
+          
           SIZE=$(du -h "$TAR_FILE" | cut -f1)
           echo "Archive size: $SIZE"
           echo "$TAR_FILE" > tar_filename.txt
@@ -251,15 +287,18 @@ jobs:
 
       - name: Summary
         run: |
+          # Безопасное чтение имени файла без скрытых символов переноса строки
+          TAR_FILE=$(cat tar_filename.txt | tr -d '\n')
+          
           echo "## Docker Cache Export Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "✅ Successfully exported Docker images" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Archive:** $(cat tar_filename.txt)" >> $GITHUB_STEP_SUMMARY
-          echo "**Size:** $(du -h $(cat tar_filename.txt) | cut -f1)" >> $GITHUB_STEP_SUMMARY
-          echo "**Images:** $(wc -l < images.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "**Archive:** $TAR_FILE" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $(du -h "$TAR_FILE" | cut -f1)" >> $GITHUB_STEP_SUMMARY
+          echo "**Images:** $(wc -l < images.txt | tr -d ' ')" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### How to load in isolated environment:" >> $GITHUB_STEP_SUMMARY
           echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "docker load -i $(cat tar_filename.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "docker load -i $TAR_FILE" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
