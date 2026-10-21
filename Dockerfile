@@ -5,45 +5,44 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app/packages
 
-# Полностью отключаем проверку SSL-сертификатов, меток времени и подписей для APT
-RUN echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99no-check && \
-    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/99no-check && \
-    echo 'Acquire::Check-Valid-Until "false";' >> /etc/apt/apt.conf.d/99no-check && \
-    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check && \
-    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check && \
-    echo 'Binary::apt::APT::Options:: "--allow-insecure-repositories";' >> /etc/apt/apt.conf.d/99no-check
+# Полностью отключаем все проверки безопасности APT для архивных репозиториев через глобальный конфиг
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99disable-security && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99disable-security && \
+    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99disable-security && \
+    echo 'Acquire::https::Verify-Peer "false";' >> /etc/apt/apt.conf.d/99disable-security && \
+    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/99disable-security && \
+    echo 'APT::Get::AllowUnauthenticated "true";' >> /etc/apt/apt.conf.d/99disable-security
 
-# Динамически переписываем sources.list строго на http://debian.org (без https)
-RUN if [ -f /etc/os-release ]; then \
+# Тотальная очистка старых репозиториев и запись чистых путей archive.debian.org (только по http)
+RUN rm -rf /etc/apt/sources.list.d/* && \
+    if [ -f /etc/os-release ]; then \
         . /etc/os-release; \
         if [ "$VERSION_ID" = "10" ] || [ "$VERSION_ID" = "11" ]; then \
-            echo "Debian $VERSION_ID detected. Switching sources to archive.debian.org..."; \
-            echo "deb http://debian.org/debian/ ${VERSION_CODENAME} main" > /etc/apt/sources.list; \
+            echo "Debian $VERSION_ID detected. Overwriting sources to archive.debian.org..."; \
+            echo "deb http://debian.org ${VERSION_CODENAME} main" > /etc/apt/sources.list; \
             if [ "$VERSION_ID" = "10" ]; then \
-                echo "deb http://debian.org/debian-security/ ${VERSION_CODENAME}/updates main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org ${VERSION_CODENAME}/updates main" >> /etc/apt/sources.list; \
             fi; \
             if [ "$VERSION_ID" = "11" ]; then \
-                echo "deb http://debian.org/debian-security/ ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
-                echo "deb http://debian.org/debian/ ${VERSION_CODENAME}-updates main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org ${VERSION_CODENAME}-updates main" >> /etc/apt/sources.list; \
             fi; \
         fi; \
     fi
 
-# Обновляем кэш и устанавливаем утилиты сборки пакетов
-RUN apt-get update --allow-insecure-repositories || true && \
+# Обновляем кэш и устанавливаем утилиты. Ошибки игнорируем через || true, так как архивы могут отдавать предупреждения
+RUN apt-get update || true && \
     apt-get install -y --no-install-recommends \
-    --allow-unauthenticated \
-    --allow-insecure-repositories \
     apt-rdepends \
     dpkg-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Скачиваем git и все его транзитивные зависимости
-RUN apt-get update --allow-insecure-repositories || true && \
+RUN apt-get update || true && \
     DOWNLOAD_LIST=$(apt-rdepends git | grep -v "^ " | grep -vE "^(debconf|dpkg|libc-bin|base-files|base-passwd|bash|coreutils|dash|diffutils|findutils|grep|gzip|hostname|init-system-helpers|login|ncurses-base|ncurses-bin|perl-base|sed|tar|util-linux|sysvinit-utils|mount)$") && \
-    apt-get download -o APT::Get::AllowUnauthenticated=true -o Acquire::https::Verify-Peer=false ${DOWNLOAD_LIST}
+    apt-get download ${DOWNLOAD_LIST}
 
-# Формируем индекс локального репозитория
+# Создаем индекс локального репозитория
 RUN dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
 
 # --- Финальный этап: чистый образ для работы без интернета ---
