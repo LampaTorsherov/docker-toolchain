@@ -1,42 +1,47 @@
-# По умолчанию используем debian:11, но можно передать любую версию через --build-arg
 ARG DEBIAN_VERSION=debian:11
 FROM ${DEBIAN_VERSION} AS downloader
 
-# Отключаем интерактивные диалоги apt
 ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app/packages
 
-# Динамическая настройка репозиториев в зависимости от версии Debian
+# Настраиваем конфигурацию APT на полное игнорирование проверок подписей и дат (для archive.debian.org)
+RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
+    echo 'Binary::apt::APT::Options:: "--allow-insecure-repositories";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+
+# Динамически переписываем sources.list под архивы (исправлены пути для debian-security)
 RUN if [ -f /etc/os-release ]; then \
         . /etc/os-release; \
         if [ "$VERSION_ID" = "10" ] || [ "$VERSION_ID" = "11" ]; then \
             echo "Debian $VERSION_ID detected. Switching sources to archive.debian.org..."; \
-            # Полностью заменяем источники на архивные
             echo "deb http://debian.org ${VERSION_CODENAME} main" > /etc/apt/sources.list; \
-            echo "deb http://debian.org ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
-            # Опционально добавляем updates, если они нужны (для Debian 10 buster-updates не всегда доступен в архиве)
+            if [ "$VERSION_ID" = "10" ]; then \
+                echo "deb http://debian.org ${VERSION_CODENAME}/updates main" >> /etc/apt/sources.list; \
+            fi; \
             if [ "$VERSION_ID" = "11" ]; then \
+                echo "deb http://debian.org ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
                 echo "deb http://debian.org ${VERSION_CODENAME}-updates main" >> /etc/apt/sources.list; \
             fi; \
         fi; \
     fi
 
-# Настраиваем apt на игнорирование старых меток валидности (для архивных репозиториев)
-# и обновляем кэш, устанавливая необходимые утилиты
-RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends --allow-unauthenticated \
+# Запускаем обновление с флагами игнорирования ключей и устанавливаем утилиты
+RUN apt-get update --allow-insecure-repositories || true && \
+    apt-get install -y --no-install-recommends \
+    --allow-unauthenticated \
+    --allow-insecure-repositories \
     apt-rdepends \
     dpkg-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Скачиваем git и все его транзитивные зависимости
-RUN apt-get update && \
+# Скачиваем git и транзитивные зависимости (добавлены флаги игнорирования для apt-get download)
+RUN apt-get update --allow-insecure-repositories || true && \
     DOWNLOAD_LIST=$(apt-rdepends git | grep -v "^ " | grep -vE "^(debconf|dpkg|libc-bin|base-files|base-passwd|bash|coreutils|dash|diffutils|findutils|grep|gzip|hostname|init-system-helpers|login|ncurses-base|ncurses-bin|perl-base|sed|tar|util-linux|sysvinit-utils|mount)$") && \
-    apt-get download ${DOWNLOAD_LIST}
+    apt-get download -o APT::Get::AllowUnauthenticated=true ${DOWNLOAD_LIST}
 
-# Создаем индекс локального репозитория (Packages.gz)
+# Формируем индекс локального репозитория
 RUN dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
 
 # --- Финальный этап: чистый образ для работы без интернета ---
@@ -44,10 +49,8 @@ FROM ${DEBIAN_VERSION}
 
 WORKDIR /opt/local-repo
 
-# Переносим скачанный кэш пакетов
 COPY --from=downloader /app/packages /opt/local-repo
 
-# Создаем скрипт автоматической установки для air-gapped контура
 RUN echo '#!/bin/sh\n\
 echo "Настройка локального репозитория..."\n\
 echo "deb [trusted=yes] file:/opt/local-repo ./" > /etc/apt/sources.list.d/local.list\n\
