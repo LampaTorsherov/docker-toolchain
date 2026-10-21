@@ -1,5 +1,5 @@
 # Имя базового образа передается через --build-arg (например, debian:11)
-ARG DEBIAN_VERSION=debian:11
+ARG DEBIAN_VERSION=debian:10
 FROM ${DEBIAN_VERSION} AS downloader
 
 # Отключаем интерактивные диалоги apt
