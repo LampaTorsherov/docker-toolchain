@@ -5,29 +5,31 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app/packages
 
-# Настраиваем конфигурацию APT на полное игнорирование проверок подписей и дат (для archive.debian.org)
-RUN echo 'Acquire::Check-Valid-Until "false";' > /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check-valid-until && \
-    echo 'Binary::apt::APT::Options:: "--allow-insecure-repositories";' >> /etc/apt/apt.conf.d/99no-check-valid-until
+# Полностью отключаем проверку SSL-сертификатов, меток времени и подписей для APT
+RUN echo 'Acquire::https::Verify-Peer "false";' > /etc/apt/apt.conf.d/99no-check && \
+    echo 'Acquire::https::Verify-Host "false";' >> /etc/apt/apt.conf.d/99no-check && \
+    echo 'Acquire::Check-Valid-Until "false";' >> /etc/apt/apt.conf.d/99no-check && \
+    echo 'Acquire::AllowInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check && \
+    echo 'Acquire::AllowDowngradeToInsecureRepositories "true";' >> /etc/apt/apt.conf.d/99no-check && \
+    echo 'Binary::apt::APT::Options:: "--allow-insecure-repositories";' >> /etc/apt/apt.conf.d/99no-check
 
-# Динамически переписываем sources.list под архивы (исправлены пути для debian-security)
+# Динамически переписываем sources.list строго на http://debian.org (без https)
 RUN if [ -f /etc/os-release ]; then \
         . /etc/os-release; \
         if [ "$VERSION_ID" = "10" ] || [ "$VERSION_ID" = "11" ]; then \
             echo "Debian $VERSION_ID detected. Switching sources to archive.debian.org..."; \
-            echo "deb http://debian.org ${VERSION_CODENAME} main" > /etc/apt/sources.list; \
+            echo "deb http://debian.org/debian/ ${VERSION_CODENAME} main" > /etc/apt/sources.list; \
             if [ "$VERSION_ID" = "10" ]; then \
-                echo "deb http://debian.org ${VERSION_CODENAME}/updates main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org/debian-security/ ${VERSION_CODENAME}/updates main" >> /etc/apt/sources.list; \
             fi; \
             if [ "$VERSION_ID" = "11" ]; then \
-                echo "deb http://debian.org ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
-                echo "deb http://debian.org ${VERSION_CODENAME}-updates main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org/debian-security/ ${VERSION_CODENAME}-security main" >> /etc/apt/sources.list; \
+                echo "deb http://debian.org/debian/ ${VERSION_CODENAME}-updates main" >> /etc/apt/sources.list; \
             fi; \
         fi; \
     fi
 
-# Запускаем обновление с флагами игнорирования ключей и устанавливаем утилиты
+# Обновляем кэш и устанавливаем утилиты сборки пакетов
 RUN apt-get update --allow-insecure-repositories || true && \
     apt-get install -y --no-install-recommends \
     --allow-unauthenticated \
@@ -36,10 +38,10 @@ RUN apt-get update --allow-insecure-repositories || true && \
     dpkg-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Скачиваем git и транзитивные зависимости (добавлены флаги игнорирования для apt-get download)
+# Скачиваем git и все его транзитивные зависимости
 RUN apt-get update --allow-insecure-repositories || true && \
     DOWNLOAD_LIST=$(apt-rdepends git | grep -v "^ " | grep -vE "^(debconf|dpkg|libc-bin|base-files|base-passwd|bash|coreutils|dash|diffutils|findutils|grep|gzip|hostname|init-system-helpers|login|ncurses-base|ncurses-bin|perl-base|sed|tar|util-linux|sysvinit-utils|mount)$") && \
-    apt-get download -o APT::Get::AllowUnauthenticated=true ${DOWNLOAD_LIST}
+    apt-get download -o APT::Get::AllowUnauthenticated=true -o Acquire::https::Verify-Peer=false ${DOWNLOAD_LIST}
 
 # Формируем индекс локального репозитория
 RUN dpkg-scanpackages . /dev/null | gzip -9c > Packages.gz
@@ -49,8 +51,10 @@ FROM ${DEBIAN_VERSION}
 
 WORKDIR /opt/local-repo
 
+# Переносим созданный оффлайн-репозиторий
 COPY --from=downloader /app/packages /opt/local-repo
 
+# Создаем скрипт автоматической установки для air-gapped контура
 RUN echo '#!/bin/sh\n\
 echo "Настройка локального репозитория..."\n\
 echo "deb [trusted=yes] file:/opt/local-repo ./" > /etc/apt/sources.list.d/local.list\n\
