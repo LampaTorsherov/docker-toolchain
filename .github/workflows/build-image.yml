@@ -22,16 +22,20 @@ on:
         type: string
 
       image_name:
-        description: "Desired name for the resulting Docker image (e.g., my-app)"
+        description: "Image name in GHCR (e.g., patroni)"
         required: true
         default: "my-custom-app"
         type: string
 
       image_tag:
-        description: "Desired tag for the resulting Docker image (e.g., latest or v1.0.0)"
+        description: "Image tag (e.g., 4.1.5-bookworm)"
         required: true
         default: "latest"
         type: string
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build_and_export:
@@ -49,41 +53,80 @@ jobs:
       - name: Generate names
         id: names
         shell: bash
+        env:
+          GH_OWNER: ${{ github.repository_owner }}
+          REQUESTED_IMAGE_NAME: ${{ inputs.image_name }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
           set -euo pipefail
 
-          IMAGE_REF="${{ inputs.image_name }}:${{ inputs.image_tag }}"
-          SAFE_NAME=$(echo "$IMAGE_REF" | sed 's/[^a-zA-Z0-9_.-]/_/g')
+          OWNER="${GH_OWNER,,}"
+          NAME="${REQUESTED_IMAGE_NAME,,}"
+          TAG="$REQUESTED_IMAGE_TAG"
+
+          if [[ ! "$NAME" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*$ ]]; then
+            echo "Invalid image_name: $REQUESTED_IMAGE_NAME" >&2
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+            echo "Invalid image_tag: $TAG" >&2
+            exit 1
+          fi
+
+          IMAGE_REF="ghcr.io/${OWNER}/${NAME}:${TAG}"
+          SAFE_NAME="$(printf '%s' "${NAME}_${TAG}" | sed 's/[^a-zA-Z0-9_.-]/_/g')"
           TAR_FILE="/tmp/${SAFE_NAME}.tar"
 
           echo "IMAGE_REF=$IMAGE_REF" >> "$GITHUB_OUTPUT"
           echo "SAFE_NAME=$SAFE_NAME" >> "$GITHUB_OUTPUT"
           echo "TAR_FILE=$TAR_FILE" >> "$GITHUB_OUTPUT"
+          echo "Image: $IMAGE_REF"
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build Docker image
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.context_path }}
           file: ${{ inputs.context_path }}/${{ inputs.dockerfile_path }}
+          platforms: linux/amd64
           push: false
           load: true
           tags: ${{ steps.names.outputs.IMAGE_REF }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Save Docker image
         shell: bash
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.IMAGE_REF }}
+          TAR_FILE: ${{ steps.names.outputs.TAR_FILE }}
         run: |
           set -euo pipefail
 
-          docker image inspect "${{ steps.names.outputs.IMAGE_REF }}"
-          docker save \
-            -o "${{ steps.names.outputs.TAR_FILE }}" \
-            "${{ steps.names.outputs.IMAGE_REF }}"
-
-          ls -lh "${{ steps.names.outputs.TAR_FILE }}"
+          docker image inspect "$IMAGE_REF"
+          docker save -o "$TAR_FILE" "$IMAGE_REF"
+          ls -lh "$TAR_FILE"
 
       - name: Upload Docker Image Tarball Artifact
         uses: actions/upload-artifact@v4
         with:
           name: docker-image-${{ steps.names.outputs.SAFE_NAME }}
           path: ${{ steps.names.outputs.TAR_FILE }}
+          if-no-files-found: error
           retention-days: 1
+
+      - name: Publish image to GHCR
+        shell: bash
+        env:
+          IMAGE_REF: ${{ steps.names.outputs.IMAGE_REF }}
+        run: |
+          set -euo pipefail
+          docker push "$IMAGE_REF"
+          echo "### Published image" >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE_REF" >> "$GITHUB_STEP_SUMMARY"
