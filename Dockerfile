@@ -1,4 +1,3 @@
-
 # syntax=docker/dockerfile:1.7
 
 # Postgres Pro Standard 15.14.1-1.17x8664 compatibility base.
