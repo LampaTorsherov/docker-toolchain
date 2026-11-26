@@ -1,83 +1,146 @@
 
 # syntax=docker/dockerfile:1.7
 
-# Единственное исключение из Bookworm:
-# Postgres Pro требует libzstd1 >= 1.5.5.
+# Postgres Pro Standard 15.14.1-1.17x8664 compatibility base.
+# amd64 only. No proprietary Postgres Pro packages are used in this build.
 
-FROM --platform=linux/amd64 debian:13-slim AS zstd
+# -----------------------------------------------------------------------------
+# Debian 10: legacy ABI
+# -----------------------------------------------------------------------------
+FROM debian/eol:buster-slim AS buster-libs
+
+RUN set -eux; \
+    test "$(dpkg --print-architecture)" = amd64; \
+    printf 'Acquire::Check-Valid-Until "false";\n' \
+        > /etc/apt/apt.conf.d/99archive-no-valid-until; \
+    apt-get update; \
+    mkdir -p /out; \
+    cd /out; \
+    apt-get download \
+        'libicu63=63.1-6+deb10u3' \
+        'libreadline7=7.0-5'; \
+    test "$(find /out -maxdepth 1 -name '*.deb' | wc -l)" -eq 2; \
+    dpkg-deb -f /out/libicu63_*.deb Package Version; \
+    dpkg-deb -f /out/libreadline7_*.deb Package Version
+
+# -----------------------------------------------------------------------------
+# Debian 11: legacy LDAP and OpenSSL
+# -----------------------------------------------------------------------------
+FROM debian/eol:bullseye-slim AS bullseye-libs
+
+RUN set -eux; \
+    test "$(dpkg --print-architecture)" = amd64; \
+    printf '%s\n' \
+        'deb [check-valid-until=no] http://archive.debian.org/debian bullseye main' \
+        'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260903T220410Z/ bullseye-security main' \
+        > /etc/apt/sources.list; \
+    rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; \
+    apt-get update; \
+    mkdir -p /out; \
+    cd /out; \
+    apt-get download \
+        'libldap-2.4-2=2.4.57+dfsg-3+deb11u1' \
+        'libssl1.1=1.1.1w-0+deb11u8'; \
+    test "$(find /out -maxdepth 1 -name '*.deb' | wc -l)" -eq 2; \
+    dpkg-deb -f /out/libldap-2.4-2_*.deb Package Version; \
+    dpkg-deb -f /out/libssl1.1_*.deb Package Version
+
+# -----------------------------------------------------------------------------
+# Debian 13: Zstandard >= 1.5.5
+# -----------------------------------------------------------------------------
+FROM debian:13-slim AS trixie-libs
 
 RUN set -eux; \
     test "$(dpkg --print-architecture)" = amd64; \
     apt-get update; \
     mkdir -p /out; \
     cd /out; \
-    apt-get download 'libzstd1=1.5.7+dfsg-1'; \
-    test "$(find /out -maxdepth 1 -name 'libzstd1_*.deb' | wc -l)" -eq 1
+    apt-get download 'libzstd1=1.5.7+dfsg-1+deb13u1'; \
+    test "$(find /out -maxdepth 1 -name 'libzstd1_*.deb' | wc -l)" -eq 1; \
+    dpkg-deb -f /out/libzstd1_*.deb Package Version
 
-# Последний Debian 12 Bookworm.
-
-FROM --platform=linux/amd64 debian:12.15-slim
-
-ENV DEBIAN_FRONTEND=noninteractive \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
-
-COPY --from=zstd /out/libzstd1_*.deb /tmp/zstd/
-
-RUN set -eux; \
-    test "$(dpkg --print-architecture)" = amd64; \
-    \
-    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; \
-    chmod 0755 /usr/sbin/policy-rc.d; \
-    \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        'ca-certificates=20250419~deb12u2' \
-        'gosu=1.14-1+b10' \
-        'libffi8=3.4.4-1' \
-        'libicu72=72.1-3+deb12u1' \
-        'libreadline8=8.2-1.3' \
-        'libssl3=3.0.22-1~deb12u2' \
-        'libldap-2.5-0=2.5.13+dfsg-5' \
-        'liblz4-1=1.9.4-1' \
-        'libgcc-s1=12.2.0-14+deb12u1' \
-        'libstdc++6=12.2.0-14+deb12u1' \
-        'libxml2=2.9.14+dfsg-1.3~deb12u6' \
-        'libxslt1.1=1.1.35-1+deb12u4' \
-        'libgnutls30=3.7.9-2+deb12u7' \
-        'libgssapi-krb5-2=1.20.1-2+deb12u5' \
-        'libsasl2-2=2.1.28+dfsg-10+deb12u1' \
-        'libpam0g=1.5.2-6+deb12u2' \
-        'libsystemd0=252.39-1~deb12u2' \
-        'libunwind8=1.6.2-3' \
-        'libtinfo6=6.4-4' \
-        'zlib1g=1:1.2.13.dfsg-1' \
-        'locales=2.36-9+deb12u14' \
-        'tzdata' \
-        'ssl-cert=1.1.2' \
-        /tmp/zstd/*.deb; \
-    \
-    dpkg --compare-versions \
-        "$(dpkg-query -W -f='${Version}' libzstd1)" \
-        ge 1.5.5; \
-    test "$(dpkg-query -W -f='${Version}' libzstd1)" = '1.5.7+dfsg-1'; \
-    \
-    printf 'en_US.UTF-8 UTF-8\nru_RU.UTF-8 UTF-8\n' \
-        > /etc/locale.gen; \
-    locale-gen; \
-    \
-    gosu nobody true; \
-    apt-get check; \
-    dpkg --audit; \
-    ldconfig; \
-    \
-    mkdir -p /usr/share/pgpro-base; \
-    dpkg-query -W -f='${binary:Package}=${Version}\n' \
-        > /usr/share/pgpro-base/packages.lock; \
-    \
-    rm -rf /tmp/zstd /var/lib/apt/lists/*
+# -----------------------------------------------------------------------------
+# Final runtime: Debian 12 Bookworm
+# -----------------------------------------------------------------------------
+FROM debian:12.15-slim
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8
+
+COPY --from=buster-libs /out/*.deb /tmp/compat/
+COPY --from=bullseye-libs /out/*.deb /tmp/compat/
+COPY --from=trixie-libs /out/*.deb /tmp/compat/
+
+RUN set -eux; \
+    test "$(dpkg --print-architecture)" = amd64; \
+    printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d; \
+    chmod 0755 /usr/sbin/policy-rc.d; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        ca-certificates \
+        coreutils \
+        debconf \
+        gosu \
+        grep \
+        less \
+        locales \
+        readline-common \
+        sed \
+        ssl-cert \
+        tzdata \
+        libc6 \
+        libgcc-s1 \
+        libstdc++6 \
+        libgnutls30 \
+        libgssapi-krb5-2 \
+        liblz4-1 \
+        libpam0g \
+        libsasl2-2 \
+        libsystemd0 \
+        libtinfo6 \
+        libunwind8 \
+        libxml2 \
+        libxslt1.1 \
+        libuuid1 \
+        zlib1g \
+        libffi8 \
+        libssl3 \
+        libreadline8 \
+        libbz2-1.0 \
+        libcrypt1 \
+        libexpat1 \
+        libgdbm6 \
+        libgdbm-compat4 \
+        liblzma5 \
+        libncursesw6 \
+        libsqlite3-0 \
+        /tmp/compat/*.deb; \
+    apt-get check; \
+    dpkg --audit; \
+    test "$(dpkg-query -W -f='${Status}' libicu63)" = 'install ok installed'; \
+    test "$(dpkg-query -W -f='${Status}' libreadline7)" = 'install ok installed'; \
+    test "$(dpkg-query -W -f='${Status}' libldap-2.4-2)" = 'install ok installed'; \
+    test "$(dpkg-query -W -f='${Status}' libssl1.1)" = 'install ok installed'; \
+    test "$(dpkg-query -W -f='${Status}' libffi8)" = 'install ok installed'; \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libzstd1)" ge '1.5.5'; \
+    test -e /usr/lib/x86_64-linux-gnu/libicuuc.so.63; \
+    test -e /usr/lib/x86_64-linux-gnu/libreadline.so.7; \
+    test -e /usr/lib/x86_64-linux-gnu/libssl.so.1.1; \
+    test -e /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1; \
+    test -e /usr/lib/x86_64-linux-gnu/libldap-2.4.so.2; \
+    test -e /usr/lib/x86_64-linux-gnu/liblber-2.4.so.2; \
+    test -e /usr/lib/x86_64-linux-gnu/libzstd.so.1; \
+    test -e /usr/lib/x86_64-linux-gnu/libffi.so.8; \
+    sed -ri 's/^# (en_US.UTF-8 UTF-8)$/\1/' /etc/locale.gen; \
+    sed -ri 's/^# (ru_RU.UTF-8 UTF-8)$/\1/' /etc/locale.gen; \
+    locale-gen; \
+    gosu nobody true; \
+    ldconfig; \
+    mkdir -p /usr/share/pgpro-base; \
+    dpkg-query -W -f='${binary:Package}=${Version}\n' \
+        > /usr/share/pgpro-base/packages.lock; \
+    sha256sum /tmp/compat/*.deb \
+        > /usr/share/pgpro-base/compat-debs.sha256; \
+    rm -rf /tmp/compat /var/lib/apt/lists/*
 
 CMD ["bash"]
