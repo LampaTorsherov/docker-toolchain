@@ -1,0 +1,154 @@
+name: PostgreSQL Windows LTSC2019
+
+on:
+  workflow_dispatch:
+    inputs:
+      windows_base:
+        description: 'Server Core LTSC2019 tag or digest'
+        type: string
+        default: 'mcr.microsoft.com/windows/servercore:ltsc2019'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  resolve-base:
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.base.outputs.ref }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: Resolve Windows base digest
+        id: base
+        shell: bash
+        env:
+          BASE: ${{ inputs.windows_base }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "$BASE" --raw > base.json
+          top_digest=$(docker buildx imagetools inspect "$BASE" --format '{{json .Manifest.Digest}}' | jq -er '.')
+          digest=$(jq -er --arg top "$top_digest" '
+            if .manifests then
+              [.manifests[] | select(.platform.os == "windows" and .platform.architecture == "amd64" and ((.platform["os.version"] // "") | startswith("10.0.17763.")))]
+              | if length == 1 then .[0].digest else error("Expected one LTSC2019 amd64 manifest") end
+            else $top end' base.json)
+          ref="${BASE%%@*}@$digest"
+          docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | tee base-config.json
+          jq -e '.os == "windows" and .architecture == "amd64" and ((.["os.version"] // "") | startswith("10.0.17763."))' base-config.json
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "Base: $ref" >> "$GITHUB_STEP_SUMMARY"
+
+  prepare-runtime:
+    runs-on: windows-2022
+    steps:
+      - name: Collect redistributable x64 MSVC DLLs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          if (!$vs) { throw 'Visual Studio not found' }
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC" -Recurse -Directory -Filter 'Microsoft.VC143.CRT' |
+            Where-Object { $_.Parent.Name -eq 'x64' -and $_.Parent.Parent.Name -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Parent.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (!$crt) { throw 'x64 VC143 CRT not found' }
+          New-Item -ItemType Directory -Path runtime | Out-Null
+          Copy-Item "$($crt.FullName)\*.dll" runtime/
+          if (!(Test-Path runtime/vcruntime140.dll)) { throw 'VC runtime DLL missing' }
+          "VC Runtime: $($crt.Parent.Parent.Name)" >> $env:GITHUB_STEP_SUMMARY
+          Get-ChildItem runtime | Select-Object Name, Length
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vc-runtime-amd64
+          path: runtime/
+          if-no-files-found: error
+
+  build:
+    needs: [resolve-base, prepare-runtime]
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - version: '16.16'
+            revision: '2'
+            sha256: 'add1de261b150e6923266abee293f05050795e73f5356158aee4221a2170c073'
+          - version: '17.12'
+            revision: '2'
+            sha256: '520c8c6f19abb3b31fa83ec5e486e2f769eedd7593d94e60a7cda8a5bfb4df91'
+          - version: '18.7'
+            revision: '2'
+            sha256: '74f3740a2e7844118857f297c2067d226f8f2b0652de96022ce54bb27cd60a79'
+    env:
+      PG_VERSION: ${{ matrix.version }}
+      PG_REVISION: ${{ matrix.revision }}
+      PG_SHA256: ${{ matrix.sha256 }}
+      WINDOWS_BASE: ${{ needs.resolve-base.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: vc-runtime-amd64
+          path: runtime/
+      - name: Download and verify PostgreSQL distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://get.enterprisedb.com/postgresql/postgresql-${PG_VERSION}-${PG_REVISION}-windows-x64-binaries.zip"
+          curl --fail --location --retry 5 "$url" -o postgres.zip
+          echo "$PG_SHA256  postgres.zip" | sha256sum --check
+          unzip -q postgres.zip
+          for f in postgres initdb pg_ctl psql pg_isready createdb; do
+            test -f "pgsql/bin/$f.exe"
+          done
+          test -d pgsql/share
+          test -d pgsql/lib
+          cp runtime/*.dll pgsql/bin/
+          rm -rf runtime postgres.zip
+          du -sh pgsql
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          platforms: windows/amd64
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Windows image, verify and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/postgres-windows"
+          candidate="$repo:build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${PG_VERSION}"
+          image="$repo:${PG_VERSION}-ltsc2019"
+          docker buildx build \
+            --platform windows/amd64 \
+            --build-arg WINDOWS_BASE="$WINDOWS_BASE" \
+            --build-arg PG_VERSION="$PG_VERSION" \
+            --provenance=false --sbom=false \
+            --output "type=image,name=$candidate,push=true,oci-mediatypes=false" \
+            --metadata-file build-metadata.json \
+            --progress plain .
+          docker buildx imagetools inspect "$candidate" --raw > manifest.json
+          # Expect a single image, not a multi-platform or attestation index.
+          jq -e '.manifests == null and (.layers | length > 0) and all(.layers[]; ((.mediaType | contains("foreign")) | not) and ((.urls // []) | length == 0))' manifest.json
+          docker buildx imagetools inspect "$candidate" --format '{{json .Image}}' | tee image-config.json
+          jq -e '.os == "windows" and .architecture == "amd64" and ((.["os.version"] // "") | startswith("10.0.17763."))' image-config.json
+          digest=$(jq -er '."containerimage.digest"' build-metadata.json)
+          docker buildx imagetools create --prefer-index=false --tag "$image" "$repo@$digest"
+          docker buildx imagetools inspect "$image"
+          printf 'Image: `%s`\n\nDigest: `%s`\n\nBase: `%s`\n\nRuntime smoke test on Windows Server 2019 is still required.\n' "$image" "$digest" "$WINDOWS_BASE" >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload image metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-metadata-${{ matrix.version }}
+          path: |
+            manifest.json
+            image-config.json
+            build-metadata.json
+          if-no-files-found: ignore
