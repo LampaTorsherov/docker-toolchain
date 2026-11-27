@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!entrypoint.ps1
+!pgsql/
+!pgsql/**
