@@ -1,0 +1,64 @@
+# Self-contained Dockerfile; build with an empty context on native Linux/amd64.
+ARG BOOTSTRAP_IMAGE=golang:1.26.4-bookworm
+ARG BASE_IMAGE=buildpack-deps:bookworm-scm
+
+FROM ${BOOTSTRAP_IMAGE} AS build
+ARG TARGETARCH
+ARG BUILDARCH
+RUN set -eux; \
+    test "$TARGETARCH" = amd64; \
+    test "$BUILDARCH" = amd64; \
+    test "$(uname -m)" = x86_64
+RUN set -eux; \
+    mv /usr/local/go /opt/go-bootstrap
+ENV GOROOT_BOOTSTRAP=/opt/go-bootstrap
+ENV PATH=/opt/go-bootstrap/bin:$PATH
+ENV GOTOOLCHAIN=local GOENV=off GOPROXY=off
+ARG TANGO_REPO=https://github.com/LampaTorsherov/tango.git
+ARG TANGO_REF=0651925c427ca1066c6777eb9a484015f027d697
+RUN set -eux; \
+    git init /usr/local/go; \
+    git -C /usr/local/go remote add origin "$TANGO_REPO"; \
+    git -C /usr/local/go fetch --depth=1 --no-tags origin "$TANGO_REF"; \
+    git -C /usr/local/go checkout --detach FETCH_HEAD; \
+    git -C /usr/local/go rev-parse HEAD; \
+    test "$(head -n 1 /usr/local/go/VERSION)" = "go1.26.4"; \
+    test "$(head -n 1 /usr/local/go/VERSION.tango)" = bm.1.0.0
+WORKDIR /usr/local/go/src
+RUN set -eux; \
+    unset GOROOT CGO_ENABLED GOFLAGS GOEXPERIMENT GOAMD64; \
+    bash ./make.bash --no-banner; \
+    git -C /usr/local/go rev-parse HEAD > /usr/local/go/TANGO_REVISION; \
+    test "$(/usr/local/go/bin/go env GOVERSION)" = go1.26.4; \
+    test "$(/usr/local/go/bin/go bversion)" = "Tango bversion go1.26.4.bm.1.0.0 linux/amd64"; \
+    test "$(/usr/local/go/bin/go env GOROOT)" = /usr/local/go; \
+    rm -rf /usr/local/go/.git /usr/local/go/pkg/obj /usr/local/go/pkg/bootstrap; \
+    /usr/local/go/bin/go clean -cache
+
+FROM ${BASE_IMAGE}
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends g++ gcc libc6-dev make pkg-config; \
+    rm -rf /var/lib/apt/lists/*
+ENV GOLANG_VERSION=1.26.4
+ENV TANGO_VERSION=bm.1.0.0
+ENV GOTOOLCHAIN=local
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
+COPY --from=build /usr/local/go/ /usr/local/go/
+RUN set -eux; \
+    test "$(/usr/local/go/bin/go env GOVERSION)" = go1.26.4; \
+    test "$(/usr/local/go/bin/go bversion)" = "Tango bversion go1.26.4.bm.1.0.0 linux/amd64"; \
+    test "$(/usr/local/go/bin/go env GOROOT)" = /usr/local/go; \
+    go version; \
+    go bversion; \
+    mkdir -p "$GOPATH/src" "$GOPATH/bin"; \
+    chmod -R 1777 "$GOPATH"; \
+    tmp="$(mktemp -d)"; \
+    export GOCACHE="$tmp/cache"; \
+    export GOPROXY=off; \
+    printf 'package main\nfunc main() { println("tango smoke test") }\n' > "$tmp/main.go"; \
+    go build -o "$tmp/plain" "$tmp/main.go"; \
+    "$tmp/plain"; \
+    rm -rf "$tmp"
+WORKDIR $GOPATH

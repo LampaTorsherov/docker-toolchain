@@ -1,0 +1,108 @@
+# Self-contained Dockerfile; build with an empty context on native Linux/amd64.
+ARG BOOTSTRAP_IMAGE=golang:1.26.11-bookworm
+ARG BASE_IMAGE=buildpack-deps:bookworm-scm
+
+FROM ${BOOTSTRAP_IMAGE} AS bootstrap
+
+FROM ${BASE_IMAGE} AS llvm-build
+ARG TARGETARCH
+ARG BUILDARCH
+RUN set -eux; \
+    test "$TARGETARCH" = amd64; \
+    test "$BUILDARCH" = amd64; \
+    test "$(uname -m)" = x86_64
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends bash g++ gcc libc6-dev make pkg-config git ca-certificates cmake ninja-build python3 zlib1g-dev libzstd-dev; \
+    rm -rf /var/lib/apt/lists/*
+ARG TANGOLLVM_REPO=https://github.com/bytedance/tangollvm.git
+ARG TANGOLLVM_REF=refs/heads/release/tangollvm19.x
+ARG LLVM_JOBS=2
+RUN set -eux; \
+    case "$LLVM_JOBS" in ""|*[!0-9]*) exit 1;; esac; \
+    test "$LLVM_JOBS" -gt 0; \
+    git init /opt/tangollvm; \
+    git -C /opt/tangollvm remote add origin "$TANGOLLVM_REPO"; \
+    git -C /opt/tangollvm fetch --depth=1 --no-tags origin "$TANGOLLVM_REF"; \
+    git -C /opt/tangollvm checkout --detach FETCH_HEAD; \
+    git -C /opt/tangollvm rev-parse HEAD; \
+    cd /opt/tangollvm; \
+    grep -Fq 'cmake --build . -j 24' build.sh; \
+    grep -Fxq 'ninja install' build.sh; \
+    sed -i -e 's/cmake --build \. -j 24/cmake --build . -j "$LLVM_JOBS"/' -e 's/^ninja install$/ninja -j "$LLVM_JOBS" install/' -e 's/-DLLVM_ENABLE_ASSERTIONS=\$ASSERTION/-DLLVM_ENABLE_ASSERTIONS=$ASSERTION -DLLVM_PARALLEL_LINK_JOBS=1 -DLLVM_INCLUDE_TESTS=OFF -DLLVM_INCLUDE_BENCHMARKS=OFF -DLLVM_INCLUDE_EXAMPLES=OFF -DLLVM_ENABLE_LIBXML2=OFF -DLLVM_ENABLE_LIBEDIT=OFF -DLLVM_ENABLE_TERMINFO=OFF -DLLVM_ENABLE_LIBPFM=OFF -DLLVM_ENABLE_FFI=OFF/' build.sh; \
+    export LLVM_JOBS; \
+    bash ./build.sh; \
+    git checkout -- build.sh; \
+    test -f llvm-bin-release/lib/libLLVM.so; \
+    rm -rf llvm-build-release
+
+FROM llvm-build AS build
+COPY --from=bootstrap /usr/local/go/ /opt/go-bootstrap/
+ENV GOROOT_BOOTSTRAP=/opt/go-bootstrap
+ENV PATH=/opt/go-bootstrap/bin:$PATH
+ENV GOTOOLCHAIN=local GOENV=off GOPROXY=off
+ENV LD_LIBRARY_PATH=/usr/local/go/pkg/tangollvm/lib:/opt/tangollvm/llvm-bin-release/lib
+ARG TANGO_REPO=https://github.com/LampaTorsherov/tango.git
+ARG TANGO_REF=refs/tags/tango1.26.11
+RUN set -eux; \
+    git init /opt/tango; \
+    git -C /opt/tango remote add origin "$TANGO_REPO"; \
+    git -C /opt/tango fetch --depth=1 --no-tags origin "$TANGO_REF"; \
+    git -C /opt/tango checkout --detach FETCH_HEAD; \
+    git -C /opt/tango rev-parse HEAD; \
+    test "$(head -n 1 /opt/tango/VERSION)" = "go1.26.11"; \
+    test "$(head -n 1 /opt/tango/VERSION.tango)" = bm.1.0.0
+RUN set -eux; \
+    unset GOROOT GOFLAGS GOEXPERIMENT GOAMD64 CGO_ENABLED; \
+    test ! -e /usr/local/go; \
+    TANGOLLVM_REPO=/opt/tangollvm TANGOLLVM_BUILD_ROOT=/usr/local/go bash /opt/tango/src/make.tangollvm.bash --no-banner; \
+    git -C /opt/tango rev-parse HEAD > /usr/local/go/TANGO_REVISION; \
+    git -C /opt/tangollvm rev-parse HEAD > /usr/local/go/TANGOLLVM_REVISION; \
+    case "$(/usr/local/go/bin/go env GOVERSION)" in go1.26.11|go1.26.11-X:tangollvm|"go1.26.11 X:tangollvm") ;; *) exit 1;; esac; \
+    case "$(/usr/local/go/bin/go bversion)" in "Tango bversion go1.26.11.bm.1.0.0 linux/amd64"|"Tango bversion go1.26.11.bm.1.0.0-X:tangollvm linux/amd64"|"Tango bversion go1.26.11.bm.1.0.0 X:tangollvm linux/amd64") ;; *) exit 1;; esac; \
+    test "$(/usr/local/go/bin/go env GOROOT)" = /usr/local/go; \
+    test -s /usr/local/go/tangollvm-source.json; \
+    test -x /usr/local/go/pkg/tool/linux_amd64/llvm_compile; \
+    test -x /usr/local/go/pkg/tool/linux_amd64/llvm_link; \
+    rm -rf /usr/local/go/pkg/obj /usr/local/go/pkg/bootstrap; \
+    /usr/local/go/bin/go clean -cache
+
+FROM ${BASE_IMAGE}
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends g++ gcc libc6-dev make pkg-config zlib1g libzstd1; \
+    rm -rf /var/lib/apt/lists/*
+ENV GOLANG_VERSION=1.26.11
+ENV TANGO_VERSION=bm.1.0.0
+ENV GOTOOLCHAIN=local
+ENV GOPATH=/go
+ENV PATH=$GOPATH/bin:/usr/local/go/bin:$PATH
+COPY --from=build /usr/local/go/ /usr/local/go/
+RUN set -eux; \
+    printf '%s\n' /usr/local/go/pkg/tangollvm/lib > /etc/ld.so.conf.d/tangollvm.conf; \
+    ldconfig
+ENV GOEXPERIMENT=tangollvm
+RUN set -eux; \
+    case "$(/usr/local/go/bin/go env GOVERSION)" in go1.26.11|go1.26.11-X:tangollvm|"go1.26.11 X:tangollvm") ;; *) exit 1;; esac; \
+    case "$(/usr/local/go/bin/go bversion)" in "Tango bversion go1.26.11.bm.1.0.0 linux/amd64"|"Tango bversion go1.26.11.bm.1.0.0-X:tangollvm linux/amd64"|"Tango bversion go1.26.11.bm.1.0.0 X:tangollvm linux/amd64") ;; *) exit 1;; esac; \
+    test "$(/usr/local/go/bin/go env GOROOT)" = /usr/local/go; \
+    go version; \
+    go bversion; \
+    mkdir -p "$GOPATH/src" "$GOPATH/bin"; \
+    chmod -R 1777 "$GOPATH"; \
+    tmp="$(mktemp -d)"; \
+    export GOCACHE="$tmp/cache"; \
+    export GOPROXY=off; \
+    printf 'package main\nfunc main() { println("tango smoke test") }\n' > "$tmp/main.go"; \
+    test -x "$(go env GOTOOLDIR)/llvm_compile"; \
+    test -x "$(go env GOTOOLDIR)/llvm_link"; \
+    for tool in opt llc llvm-link; do /usr/local/go/pkg/tangollvm/bin/"$tool" --version; done; \
+    GOEXPERIMENT=notangollvm go build -o "$tmp/plain" "$tmp/main.go"; \
+    "$tmp/plain"; \
+    GOEXPERIMENT=tangollvm CGO_ENABLED=1 go build -x -gcflags='all=-beast=llvm=3,optimize=3,inline=1' -o "$tmp/llvm" /usr/local/go/test/llvm/add.go; \
+    "$tmp/llvm"; \
+    rm -rf "$tmp"
+ARG LLVM_RUN_REGRESSION_TESTS=0
+RUN set -eux; \
+    case "$LLVM_RUN_REGRESSION_TESTS" in 0) ;; 1) tmp="$(mktemp -d)"; cd "$tmp"; bash /usr/local/go/test/llvm/test.sh 3 3 1; cd /; rm -rf "$tmp";; *) exit 1;; esac
+WORKDIR $GOPATH
